@@ -1,4 +1,3 @@
-# TODO: Check imports
 import numpy as np
 from scipy.integrate import BDF, DOP853, LSODA, RK23, RK45, OdeSolver, Radau
 from functools import cached_property
@@ -22,7 +21,102 @@ ODE_SOLVER_MAP = {
 }
 
 class TesterInTheLoop:
-    # TODO: Do documentation
+    """Has a method to simulate time steps of the simulation to provide
+    data in real time for the avionics.
+
+    Attributes
+    ----------
+    TesterInTheLoop.rocket : Rocket
+        Rocket class describing rocket. See Rocket class for more
+        details.
+    TesterInTheLoop.env : Environment
+        Environment object describing rail length, elevation, gravity and
+        weather condition. See Environment class for more details.
+    TesterInTheLoop.parachutes : Parachute
+        Direct link to parachutes of the Rocket. See Rocket class
+        for more details.
+    TesterInTheLoop.time_iterator : function
+        Helper iterator function to generate time discretization points.
+    TesterInTheLoop.rail_length : float, int
+        Launch rail length in meters.
+    TesterInTheLoop.effective_1rl : float
+        Original rail length minus the distance measured from nozzle exit
+        to the upper rail button. It assumes the nozzle to be aligned with
+        the beginning of the rail.
+    TesterInTheLoop.name: str
+        Name of the simulation.
+    TesterInTheLoop.max_time_step : int, float
+        Maximum time step to use during numerical integration in seconds.
+    TesterInTheLoop.min_time_step : int, float
+        Minimum time step to use during numerical integration in seconds.
+    TesterInTheLoop.rtol : int, float
+        Maximum relative error tolerance to be tolerated in the
+        numerical integration scheme.
+    TesterInTheLoop.atol : int, float
+        Maximum absolute error tolerance to be tolerated in the
+        integration scheme.
+    TesterInTheLoop.solver : scipy.integrate.LSODA
+        Scipy LSODA integration scheme.
+    TesterInTheLoop.inclination : int, float
+        Launch rail inclination angle relative to ground, given in degrees.
+    TesterInTheLoop.heading : int, float
+        Launch heading angle relative to north given in degrees.
+    TesterInTheLoop.initial_solution : list
+        List defines initial condition - [tInit, x_init,
+        y_init, z_init, vx_init, vy_init, vz_init, e0_init, e1_init,
+        e2_init, e3_init, w1_init, w2_init, w3_init]
+    TesterInTheLoop.t_initial : int, float
+        Initial simulation time in seconds. Usually 0.
+    TesterInTheLoop.solution : list
+        Solution array which keeps results from each numerical
+        integration.
+    TesterInTheLoop.t : float
+        Current integration time.
+    TesterInTheLoop.y_sol : list
+        Current integration state vector u.
+    TesterInTheLoop.post_processed : bool
+        Defines if solution data has been post processed.
+    TesterInTheLoop.initial_solution : list
+        List defines initial condition - [tInit, x_init,
+        y_init, z_init, vx_init, vy_init, vz_init, e0_init, e1_init,
+        e2_init, e3_init, w1_init, w2_init, w3_init]
+    TesterInTheLoop.out_of_rail_time : int, float
+        Time, in seconds, in which the rocket completely leaves the
+        rail.
+    TesterInTheLoop.out_of_rail_state : list
+        State vector u corresponding to state when the rocket
+        completely leaves the rail.
+    TesterInTheLoop.apogee_state : array
+        State vector u corresponding to state when the rocket's
+        vertical velocity is zero in the apogee.
+    TesterInTheLoop.apogee_time : int, float
+        Time, in seconds, in which the rocket's vertical velocity
+        reaches zero in the apogee.
+    TesterInTheLoop.apogee_x : int, float
+        X coordinate (positive east) of the center of mass of the
+        rocket when it reaches apogee.
+    TesterInTheLoop.apogee_y : int, float
+        Y coordinate (positive north) of the center of mass of the
+        rocket when it reaches apogee.
+    TesterInTheLoop.apogee : int, float
+        Z coordinate, or altitude, of the center of mass of the
+        rocket when it reaches apogee.
+    TesterInTheLoop.x_impact : int, float
+        X coordinate (positive east) of the center of mass of the
+        rocket when it impacts ground.
+    TesterInTheLoop.y_impact : int, float
+        Y coordinate (positive east) of the center of mass of the
+        rocket when it impacts ground.
+    TesterInTheLoop.impact_velocity : int, float
+        Velocity magnitude of the center of mass of the rocket when
+        it impacts ground.
+    TesterInTheLoop.impact_state : array
+        State vector u corresponding to state when the rocket
+        impacts the ground.
+    TesterInTheLoop.function_evaluations : array
+        List that stores number of derivative function evaluations
+        during numerical integration in cumulative manner.
+    """
 
     def __init__(
         self,
@@ -33,7 +127,6 @@ class TesterInTheLoop:
         inclination=80.0,
         heading=90.0,
         initial_solution=None,
-        terminate_on_apogee=False,
         max_time_step=None,
         min_time_step=0,
         rtol=1e-6,
@@ -42,9 +135,89 @@ class TesterInTheLoop:
         name="Tester-In-The-Loop",
         equations_of_motion="standard",
         ode_solver="LSODA",
+        burning_delay=0,
     ):
-        # TODO: Do documentation
+        """Set up the simulation.
 
+        Parameters
+        ----------
+        rocket : Rocket
+            Rocket to simulate.
+        environment : Environment
+            Environment to run simulation on.
+        rail_length : int, float
+            Length in which the rocket will be attached to the rail, only
+            moving along a fixed direction, that is, the line parallel to the
+            rail. Currently, if the an initial_solution is passed, the rail
+            length is not used.
+        sampling_rate : int, float
+            Frecuency at which the simulation has to be performed. It will
+            be used to calculate the time step. In hertz.
+        inclination : int, float, optional
+            Rail inclination angle relative to ground, given in degrees.
+            Default is 80.
+        heading : int, float, optional
+            Heading angle relative to north given in degrees.
+            Default is 90, which points in the x (east) direction.
+        initial_solution : array, Flight, optional
+            Initial solution array to be used. Format is:
+
+            .. code-block:: python
+
+                initial_solution = [
+                    self.t_initial,
+                    x_init, y_init, z_init,
+                    vx_init, vy_init, vz_init,
+                    e0_init, e1_init, e2_init, e3_init,
+                    w1_init, w2_init, w3_init
+                ]
+
+            If a Flight object is used, the last state vector will be
+            used as initial solution. If None, the initial solution will start
+            with all null values, except for the euler parameters which will be
+            calculated based on given values of inclination and heading.
+            Default is None.
+        max_time_step : int, float, optional
+            Maximum time step to use during integration in seconds.
+            Default is 0.01.
+        min_time_step : int, float, optional
+            Minimum time step to use during integration in seconds.
+            Default is 0.01.
+        rtol : float, array, optional
+            Maximum relative error tolerance to be tolerated in the
+            integration scheme. Can be given as array for each
+            state space variable. Default is 1e-3.
+        atol : float, optional
+            Maximum absolute error tolerance to be tolerated in the
+            integration scheme. Can be given as array for each
+            state space variable. Default is 6*[1e-3] + 4*[1e-6] + 3*[1e-3].
+        verbose : bool, optional
+            If true, verbose mode is activated. Default is False.
+        name : str, optional
+            Name of the flight. Default is "Flight".
+        equations_of_motion : str, optional
+            Type of equations of motion to use. Can be "standard" or
+            "solid_propulsion". Default is "standard". Solid propulsion is a
+            more restricted set of equations of motion that only works for
+            solid propulsion rockets. Such equations were used in RocketPy v0
+            and are kept here for backwards compatibility.
+        ode_solver : str, ``scipy.integrate.OdeSolver``, optional
+            Integration method to use to solve the equations of motion ODE.
+            Available options are: 'RK23', 'RK45', 'DOP853', 'Radau', 'BDF',
+            'LSODA' from ``scipy.integrate.solve_ivp``.
+            Default is 'LSODA', which is recommended for most flights.
+            A custom ``scipy.integrate.OdeSolver`` can be passed as well.
+            For more information on the integration methods, see the scipy
+            documentation.
+        burning_delay : int, float, optional
+            Time spent between the ignition signal is sent and the motor actually
+            provides thrust. In seconds.
+
+
+        Returns
+        -------
+        None
+        """
         # Save attributes
         self.rocket = rocket
         self.env = environment
@@ -55,7 +228,6 @@ class TesterInTheLoop:
         self.inclination = inclination
         self.sampling_rate = sampling_rate
         self.initial_solution = initial_solution
-        self.terminate_on_apogee = terminate_on_apogee
         self.rtol = rtol
         self.atol = atol or 6 * [1e-3] + 4 * [1e-6] + 3 * [1e-3]
         self.max_time_step = max_time_step or 1 / sampling_rate
@@ -64,20 +236,27 @@ class TesterInTheLoop:
         self.verbose = verbose
         self.ode_solver = ode_solver
         self.name = name
+        self.burning_delay = burning_delay
+
+        # More attributes
+        self.parachutes = self.rocket.parachutes
 
         # Simulation initialization
         self.__init_solution_monitors()
         self.__init_equations_of_motion()
         self.__init_solver_monitors()
+        self.__init_devices(self.parachutes)
 
     def simulate_one_time_step(self):
-        # TODO: Documentation
+        """Go ahead in the simulation for one time step"""
 
         # Calculate the max time for simulation
         max_time = self.t + 1 / self.sampling_rate
 
         # Check if parachutes are deployed
-        if self.parachute_deployed():  # TODO: Lag isn't taken into account
+        parachute = self.parachute_index
+        if parachute is not None and self.t > self.parachute_delay[parachute]:
+            self.parachute_cd_s = self.parachutes[parachute].cd_s
             self.derivative = self.u_dot_parachute
         
         # Select the integration method
@@ -217,18 +396,10 @@ class TesterInTheLoop:
                     self.apogee_y = self.apogee_state[1]
                     self.apogee = self.apogee_state[2]
 
-                    if self.terminate_on_apogee:
-                        self.t = self.t_final = t_root
-                        # Roll back solution
-                        self.solution[-1] = [self.t, *self.apogee_state]
-                        # Prepare to leave loops and start new flight phase
-                        self.time_nodes.flush_after(node_index)
-                        self.time_nodes.add_node(self.t, [], [], [])
-                        self.solver.status = "finished"
-                    elif len(self.solution) > 2:
-                        # adding the apogee state to solution increases accuracy
-                        # we can only do this if the apogee is not the first state
-                        self.solution.insert(-1, [t_root, *self.apogee_state])
+                    # adding the apogee state to solution increases accuracy
+                    # we can only do this if the apogee is not the first state
+                    self.solution.insert(-1, [t_root, *self.apogee_state])
+
                 # Check for impact event
                 if self.y_sol[2] < self.env.elevation:
                     # Check exactly when it happened using root finding
@@ -284,7 +455,6 @@ class TesterInTheLoop:
         self.y_impact = 0
         self.impact_velocity = 0
         self.impact_state = np.array([0])
-        self.parachute_events = []
         self.post_processed = False
         self.__post_processed_variables = []
 
@@ -364,8 +534,7 @@ class TesterInTheLoop:
             ]
             # Set initial derivative for rail phase
             self.derivative = self.udot_rail1
-            self.motor_off = True
-            self.motor_burning_signal = False
+            self.motor_on = False
         elif isinstance(self.initial_solution, Flight):
             # Initialize time and state variables based on last solution of
             # previous flight
@@ -432,7 +601,7 @@ class TesterInTheLoop:
         _, _, z, vx, vy, vz, e0, e1, e2, e3, _, _, _ = u
 
         # Motor burning time
-        if self.motor_burning_signal:
+        if self.motor_on:
             burning_time = t - self.burning_delay
         else:
             burning_time = 0
@@ -507,7 +676,7 @@ class TesterInTheLoop:
         # Determine lift force and moment
         R1, R2, M1, M2, M3 = 0, 0, 0, 0, 0
         # Motor burning time
-        if self.motor_burning_signal:
+        if self.motor_on:
             burning_time = t - self.burning_delay
         else:
             burning_time = 0
@@ -831,7 +1000,7 @@ class TesterInTheLoop:
         w = Vector([omega1, omega2, omega3])  # Angular velocity vector
 
         # Motor burning time
-        if self.motor_burning_signal:
+        if self.motor_on:
             burning_time = t - self.burning_delay
         else:
             burning_time = 0
@@ -1104,10 +1273,17 @@ class TesterInTheLoop:
         effective_1rl = self.rail_length - abs(nozzle - upper_r_button)
         return effective_1rl
 
-    # TODO: In-The-Loop specific functions
+    def __init_devices(self, parachutes):
+        """Initializes the motor and the parachutes parameters"""
+        self.motor_triggered_at = None
+        self.parachute_triggered_at = [None] * len(parachutes)
+        self.parachute_index = None
+        self.parachute_delay = []
+        for parachute in parachutes:
+            self.parachute_delay.append(parachute.lag)
+
     def generate_sensor_data(self):
-        # TODO: Add sensor deviations
-        # TODO: Documentation
+        """Does a list with the output data for avionics"""
 
         u_dot = self.derivative(self.t, self.y_sol)
 
@@ -1133,27 +1309,25 @@ class TesterInTheLoop:
             u_dot[11],      # alpha2
             u_dot[12],      # alpha3
         ]
-    
+
     def apply_input_data(self, input):
-        # TODO: Add the correct input format
-        # TODO: Documentation
+        """Takes the data from avionics and process it"""
 
         self.motor_burning_signal = input[0]
-        if self.motor_burning_signal and self.motor_off:
-            self.burning_delay = self.t
-            self.motor_off = False
         self.air_brake_deployment_level = input[1]
-        self.drogue_deployment_signal = input[2]  # TODO: Implement en u_dot_parachute
-        self.main_deployment_signal = input[3]  # TODO: Implement en u_dot_parachute
+        self.parachute_deployment_signal = input[2]
 
-    def parachute_deployed(self):
-        # TODO: Documentation
+        # Check changes in status
+        if self.motor_burning_signal and self.motor_triggered_at is None:
+            self.motor_on = True
+            self.burning_delay += self.t
+            self.motor_triggered_at = self.t
+        
+        for parachute, deployment_signal in enumerate(self.parachute_deployment_signal):
+            if deployment_signal and self.parachute_triggered_at[parachute] is None:
+                self.parachute_index = parachute
+                self.parachute_delay[parachute] += self.t
+                self.parachute_triggered_at[parachute] = self.t
 
-        if self.drogue_deployment_signal:
-            self.parachute_cd_s = self.rocket.parachutes[1].cd_s
-            return True
-        elif self.main_deployment_signal:
-            self.parachute_cd_s = self.rocket.parachutes[0].cd_s
-            return True
-        else:
-            return False
+# TODO: Implement a results manager
+# TODO: Add sensors to this class
