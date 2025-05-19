@@ -2,6 +2,7 @@ import numpy as np
 from scipy.integrate import BDF, DOP853, LSODA, RK23, RK45, OdeSolver, Radau
 from functools import cached_property
 
+from ..mathutils.function import funcify_method
 from ..mathutils.vector_matrix import Matrix, Vector
 from .flight import Flight
 from ..tools import (
@@ -116,6 +117,70 @@ class TesterInTheLoop:
     TesterInTheLoop.function_evaluations : array
         List that stores number of derivative function evaluations
         during numerical integration in cumulative manner.
+    TesterInTheLoop.x : Function
+        Rocket's X coordinate (positive east) as a function of time.
+    TesterInTheLoop.y : Function
+        Rocket's Y coordinate (positive north) as a function of time.
+    TesterInTheLoop.z : Function
+        Rocket's z coordinate (positive up) as a function of time.
+    TesterInTheLoop.vx : Function
+        Velocity of the rocket's center of dry mass in the X (East) direction of
+        the inertial frame as a function of time.
+    TesterInTheLoop.vy : Function
+        Velocity of the rocket's center of dry mass in the Y (North) direction of
+        the inertial frame as a function of time.
+    TesterInTheLoop.vz : Function
+        Velocity of the rocket's center of dry mass in the Z (Up) direction of
+        the inertial frame as a function of time.
+    TesterInTheLoop.ax : Function
+        Acceleration of the rocket's center of dry mass along the X (East)
+        axis in the inertial frame as a function of time.
+    TesterInTheLoop.ay : Function
+        Acceleration of the rocket's center of dry mass along the Y (North)
+        axis in the inertial frame as a function of time.
+    TesterInTheLoop.az : Function
+        Acceleration of the rocket's center of dry mass along the Z (Up)
+        axis in the inertial frame as a function of time.
+    TesterInTheLoop.e0 : Function
+        Rocket's Euler parameter 0 as a function of time.
+    TesterInTheLoop.e1 : Function
+        Rocket's Euler parameter 1 as a function of time.
+    TesterInTheLoop.e2 : Function
+        Rocket's Euler parameter 2 as a function of time.
+    TesterInTheLoop.e3 : Function
+        Rocket's Euler parameter 3 as a function of time.
+    TesterInTheLoop.w1 : Function
+        Angular velocity of the rocket in the x direction of the rocket's
+        body frame as a function of time, in rad/s. Sometimes referred to as
+        pitch rate (q).
+    TesterInTheLoop.w2 : Function
+        Angular velocity of the rocket in the y direction of the rocket's
+        body frame as a function of time, in rad/s. Sometimes referred to as
+        yaw rate (r).
+    TesterInTheLoop.w3 : Function
+        Angular velocity of the rocket in the z direction of the rocket's
+        body frame as a function of time, in rad/s. Sometimes referred to as
+        roll rate (p).
+    TesterInTheLoop.alpha1 : Function
+        Angular acceleration of the rocket in the x direction of the rocket's
+        body frame as a function of time, in rad/s. Sometimes referred to as
+        yaw acceleration.
+    TesterInTheLoop.alpha2 : Function
+        Angular acceleration of the rocket in the y direction of the rocket's
+        body frame as a function of time, in rad/s. Sometimes referred to as
+        yaw acceleration.
+    TesterInTheLoop.alpha3 : Function
+        Angular acceleration of the rocket in the z direction of the rocket's
+        body frame as a function of time, in rad/s. Sometimes referred to as
+        roll acceleration.
+    TesterInTheLoop.altitude : Function
+        Altitude of the rocket above the ground level (AGL) in meters.
+    Flight.latitude: Function
+        Rocket's latitude coordinates (positive North) as a function of time.
+        The Equator has a latitude equal to 0, by convention.
+    Flight.longitude: Function
+        Rocket's longitude coordinates (positive East) as a function of time.
+        Greenwich meridian has a longitude equal to 0, by convention.
     """
 
     def __init__(
@@ -242,10 +307,10 @@ class TesterInTheLoop:
         self.parachutes = self.rocket.parachutes
 
         # Simulation initialization
+        self.__init_devices(self.parachutes)
         self.__init_solution_monitors()
         self.__init_equations_of_motion()
         self.__init_solver_monitors()
-        self.__init_devices(self.parachutes)
 
     def simulate_one_time_step(self):
         """Go ahead in the simulation for one time step"""
@@ -299,14 +364,14 @@ class TesterInTheLoop:
             while self.solver.status == "running":
                 # Execute solver step, log solution and function evaluations
                 self.solver.step()
-                self.solution += [[self.solver.t, *self.solver.y]]
-                self.function_evaluations.append(self.solver.nfev)
 
                 # Update time and state
                 self.t = self.solver.t
                 self.y_sol = self.solver.y
                 if self.verbose:
                     print(f"Current Simulation Time: {self.t:3.4f} s", end="\r")
+                self.solution += [self.store_solution()]
+                self.function_evaluations.append(self.solver.nfev)
 
                 # Check for first out of rail event
                 if len(self.out_of_rail_state) == 1 and (
@@ -370,7 +435,7 @@ class TesterInTheLoop:
                     self.t = valid_t_root[0] + self.solution[-2][0]
                     interpolator = self.solver.dense_output()
                     self.y_sol = interpolator(self.t)
-                    self.solution[-1] = [self.t, *self.y_sol]
+                    self.solution[-1] = self.store_solution()
                     self.out_of_rail_time = self.t
                     self.out_of_rail_time_index = len(self.solution) - 1
                     self.out_of_rail_state = self.y_sol
@@ -398,7 +463,14 @@ class TesterInTheLoop:
 
                     # adding the apogee state to solution increases accuracy
                     # we can only do this if the apogee is not the first state
-                    self.solution.insert(-1, [t_root, *self.apogee_state])
+                    u_dot = self.derivative(t_root, self.apogee_state)
+                    self.solution.insert(-1, [
+                        t_root, 
+                        *self.apogee_state[:6].flatten(),
+                        *u_dot[3:6],
+                        *self.apogee_state[6:].flatten(),
+                        *u_dot[-3:],
+                    ])
 
                 # Check for impact event
                 if self.y_sol[2] < self.env.elevation:
@@ -430,7 +502,7 @@ class TesterInTheLoop:
                     interpolator = self.solver.dense_output()
                     self.y_sol = self.impact_state = interpolator(self.t)
                     # Roll back solution
-                    self.solution[-1] = [self.t, *self.y_sol]
+                    self.solution[-1] = self.store_solution()
                     # Save impact state
                     self.x_impact = self.impact_state[0]
                     self.y_impact = self.impact_state[1]
@@ -472,9 +544,9 @@ class TesterInTheLoop:
         self.__init_flight_state()
 
         self.t_initial = self.initial_solution[0]
-        self.solution.append(self.initial_solution)
-        self.t = self.solution[-1][0]
-        self.y_sol = self.solution[-1][1:]
+        self.t = self.initial_solution[0]
+        self.y_sol = self.initial_solution[1:]
+        self.solution += [self.store_solution()]
 
         self.__set_ode_solver(self.ode_solver)
 
@@ -575,7 +647,7 @@ class TesterInTheLoop:
 
         self.__is_lsoda = issubclass(self._solver, LSODA)
 
-    def udot_rail1(self, t, u, post_processing=False):
+    def udot_rail1(self, t, u):
         """Calculates derivative of u state vector with respect to time
         when rocket is flying in 1 DOF motion in the rail.
 
@@ -586,9 +658,6 @@ class TesterInTheLoop:
         u : list
             State vector defined by u = [x, y, z, vx, vy, vz, e0, e1,
             e2, e3, omega1, omega2, omega3].
-        post_processing : bool, optional
-            If True, adds flight data information directly to self
-            variables such as self.angle_of_attack. Default is False.
 
         Return
         ------
@@ -640,15 +709,11 @@ class TesterInTheLoop:
         else:
             ax, ay, az = 0, 0, 0
 
-        if post_processing:
-            # Use u_dot post processing code for forces, moments and env data
-            self.u_dot_generalized(t, u, post_processing=True)
-            # Save feasible accelerations
-            self.__post_processed_variables[-1][1:7] = [ax, ay, az, 0, 0, 0]
+        self.__post_processed_variables.append([t, self.air_brake_deployment_level])
 
         return [vx, vy, vz, ax, ay, az, 0, 0, 0, 0, 0, 0, 0]
 
-    def u_dot(self, t, u, post_processing=False):  # pylint: disable=too-many-locals,too-many-statements
+    def u_dot(self, t, u):  # pylint: disable=too-many-locals,too-many-statements
         """Calculates derivative of u state vector with respect to time
         when rocket is flying in 6 DOF motion during ascent out of rail
         and descent without parachute.
@@ -660,9 +725,6 @@ class TesterInTheLoop:
         u : list
             State vector defined by u = [x, y, z, vx, vy, vz, e0, e1,
             e2, e3, omega1, omega2, omega3].
-        post_processing : bool, optional
-            If True, adds flight data information directly to self
-            variables such as self.angle_of_attack, by default False
 
         Returns
         -------
@@ -945,29 +1007,11 @@ class TesterInTheLoop:
             alpha3,
         ]
 
-        if post_processing:
-            self.__post_processed_variables.append(
-                [
-                    t,
-                    ax,
-                    ay,
-                    az,
-                    alpha1,
-                    alpha2,
-                    alpha3,
-                    R1,
-                    R2,
-                    R3,
-                    M1,
-                    M2,
-                    M3,
-                    net_thrust,
-                ]
-            )
+        self.__post_processed_variables.append([t, self.air_brake_deployment_level])
 
         return u_dot
 
-    def u_dot_generalized(self, t, u, post_processing=False):  # pylint: disable=too-many-locals,too-many-statements
+    def u_dot_generalized(self, t, u):  # pylint: disable=too-many-locals,too-many-statements
         """Calculates derivative of u state vector with respect to time when the
         rocket is flying in 6 DOF motion in space and significant mass variation
         effects exist. Typical flight phases include powered ascent after launch
@@ -1176,14 +1220,11 @@ class TesterInTheLoop:
         # Create u_dot
         u_dot = [*r_dot, *v_dot, *e_dot, *w_dot]
 
-        if post_processing:
-            self.__post_processed_variables.append(
-                [t, *v_dot, *w_dot, R1, R2, R3, M1, M2, M3, net_thrust]
-            )
+        self.__post_processed_variables.append([t, self.air_brake_deployment_level])
 
         return u_dot
     
-    def u_dot_parachute(self, t, u, post_processing=False):
+    def u_dot_parachute(self, t, u):
         """Calculates derivative of u state vector with respect to time
         when rocket is flying under parachute. A 3 DOF approximation is
         used.
@@ -1249,10 +1290,7 @@ class TesterInTheLoop:
         ay = Dy / (mp + ma)
         az = (Dz - 9.8 * mp) / (mp + ma)
 
-        if post_processing:
-            self.__post_processed_variables.append(
-                [t, ax, ay, az, 0, 0, 0, Dx, Dy, Dz, 0, 0, 0, 0]
-            )
+        self.__post_processed_variables.append([t, self.air_brake_deployment_level])
 
         return [vx, vy, vz, ax, ay, az, 0, 0, 0, 0, 0, 0, 0]
 
@@ -1274,16 +1312,17 @@ class TesterInTheLoop:
         return effective_1rl
 
     def __init_devices(self, parachutes):
-        """Initializes the motor and the parachutes parameters"""
+        """Initializes parameters for the motor, the airbrake and the parachutes"""
         self.motor_triggered_at = None
+        self.air_brake_deployment_level = 0
         self.parachute_triggered_at = [None] * len(parachutes)
         self.parachute_index = None
         self.parachute_delay = []
         for parachute in parachutes:
             self.parachute_delay.append(parachute.lag)
 
-    def generate_sensor_data(self):
-        """Does a list with the output data for avionics"""
+    def store_solution(self):
+        """Does a list with the solution of the simulation"""
 
         u_dot = self.derivative(self.t, self.y_sol)
 
@@ -1329,5 +1368,199 @@ class TesterInTheLoop:
                 self.parachute_delay[parachute] += self.t
                 self.parachute_triggered_at[parachute] = self.t
 
-# TODO: Implement a results manager
+    def generate_output_data(self):
+        # TODO: Add sensors and generate data
+        a=1
+    
+    # Functions for the solution
+    @funcify_method("Time (s)", "X (m)", "spline", "constant")
+    def x(self):
+        """Rocket x position relative to the launch pad as a Function of
+        time."""
+        return np.array(self.solution)[:, [0, 1]]
+
+    @funcify_method("Time (s)", "Y (m)", "spline", "constant")
+    def y(self):
+        """Rocket y position relative to the lauch pad as a Function of
+        time."""
+        return np.array(self.solution)[:, [0, 2]]
+
+    @funcify_method("Time (s)", "Z (m)", "spline", "constant")
+    def z(self):
+        """Rocket z position relative to the launch pad as a Function of
+        time."""
+        return np.array(self.solution)[:, [0, 3]]
+
+    @funcify_method("Time (s)", "Altitude AGL (m)", "spline", "constant")
+    def altitude(self):
+        """Rocket altitude above ground level as a Function of time. Ground
+        level is defined by the environment elevation."""
+        return self.z - self.env.elevation
+
+    @funcify_method("Time (s)", "Vx (m/s)", "spline", "zero")
+    def vx(self):
+        """Velocity of the rocket's center of dry mass in the X (East) direction
+        of the inertial frame as a function of time."""
+        return np.array(self.solution)[:, [0, 4]]
+
+    @funcify_method("Time (s)", "Vy (m/s)", "spline", "zero")
+    def vy(self):
+        """Velocity of the rocket's center of dry mass in the Y (North)
+        direction of the inertial frame as a function of time."""
+        return np.array(self.solution)[:, [0, 5]]
+
+    @funcify_method("Time (s)", "Vz (m/s)", "spline", "zero")
+    def vz(self):
+        """Velocity of the rocket's center of dry mass in the Z (Up) direction of
+        the inertial frame as a function of time."""
+        return np.array(self.solution)[:, [0, 6]]
+    
+    @funcify_method("Time (s)", "Ax (m/s²)", "spline", "zero")
+    def ax(self):
+        """Acceleration of the rocket's center of dry mass along the X (East)
+        axis in the inertial frame as a function of time."""
+        return np.array(self.solution)[:, [0, 7]]
+
+    @funcify_method("Time (s)", "Ay (m/s²)", "spline", "zero")
+    def ay(self):
+        """Acceleration of the rocket's center of dry mass along the Y (North)
+        axis in the inertial frame as a function of time."""
+        return np.array(self.solution)[:, [0, 8]]
+
+    @funcify_method("Time (s)", "Az (m/s²)", "spline", "zero")
+    def az(self):
+        """Acceleration of the rocket's center of dry mass along the Z (Up)
+        axis in the inertial frame as a function of time."""
+        return np.array(self.solution)[:, [0, 9]]
+
+    @funcify_method("Time (s)", "e0", "spline", "constant")
+    def e0(self):
+        """Rocket quaternion e0 as a Function of time."""
+        return np.array(self.solution)[:, [0, 10]]
+
+    @funcify_method("Time (s)", "e1", "spline", "constant")
+    def e1(self):
+        """Rocket quaternion e1 as a Function of time."""
+        return np.array(self.solution)[:, [0, 11]]
+
+    @funcify_method("Time (s)", "e2", "spline", "constant")
+    def e2(self):
+        """Rocket quaternion e2 as a Function of time."""
+        return np.array(self.solution)[:, [0, 12]]
+
+    @funcify_method("Time (s)", "e3", "spline", "constant")
+    def e3(self):
+        """Rocket quaternion e3 as a Function of time."""
+        return np.array(self.solution)[:, [0, 13]]
+
+    @funcify_method("Time (s)", "ω1 (rad/s)", "spline", "zero")
+    def w1(self):
+        """Angular velocity of the rocket in the x direction of the rocket's
+        body frame as a function of time, in rad/s. Sometimes referred to as
+        pitch rate (q)."""
+        return np.array(self.solution)[:, [0, 14]]
+
+    @funcify_method("Time (s)", "ω2 (rad/s)", "spline", "zero")
+    def w2(self):
+        """Angular velocity of the rocket in the y direction of the rocket's
+        body frame as a function of time, in rad/s. Sometimes referred to as
+        yaw rate (r)."""
+        return np.array(self.solution)[:, [0, 15]]
+
+    @funcify_method("Time (s)", "ω3 (rad/s)", "spline", "zero")
+    def w3(self):
+        """Angular velocity of the rocket in the z direction of the rocket's
+        body frame as a function of time, in rad/s. Sometimes referred to as
+        roll rate (p)."""
+        return np.array(self.solution)[:, [0, 16]]
+    
+    @funcify_method("Time (s)", "α1 (rad/s²)", "spline", "zero")
+    def alpha1(self):
+        """Angular acceleration of the rocket in the x direction of the rocket's
+        body frame as a function of time, in rad/s. Sometimes referred to as
+        pitch acceleration."""
+        return np.array(self.solution)[:, [0, 17]]
+
+    @funcify_method("Time (s)", "α2 (rad/s²)", "spline", "zero")
+    def alpha2(self):
+        """Angular acceleration of the rocket in the y direction of the rocket's
+        body frame as a function of time, in rad/s. Sometimes referred to as
+        yaw acceleration."""
+        return np.array(self.solution)[:, [0, 18]]
+
+    @funcify_method("Time (s)", "α3 (rad/s²)", "spline", "zero")
+    def alpha3(self):
+        """Angular acceleration of the rocket in the z direction of the rocket's
+        body frame as a function of time, in rad/s. Sometimes referred to as
+        roll acceleration."""
+        return np.array(self.solution)[:, [0, 19]]
+    
+    @cached_property
+    def time(self):
+        """Returns time array from solution."""
+        return np.array(self.solution)[:, 0]
+
+    @funcify_method(
+        "Time (s)", "Horizontal Distance to Launch Point (m)", "spline", "constant"
+    )
+    def drift(self):
+        """Rocket horizontal distance to tha launch point, in meters, as a
+        Function of time."""
+        return np.column_stack(
+            (self.time, (self.x[:, 1] ** 2 + self.y[:, 1] ** 2) ** 0.5)
+        )
+
+    @funcify_method("Time (s)", "Bearing (°)", "spline", "constant")
+    def bearing(self):
+        """Rocket bearing compass, in degrees, as a Function of time."""
+        x, y = self.x[:, 1], self.y[:, 1]
+        bearing = (2 * np.pi - np.arctan2(-x, y)) * (180 / np.pi)
+        return np.column_stack((self.time, bearing))
+    
+    @funcify_method("Time (s)", "Latitude (°)", "linear", "constant")
+    def latitude(self):
+        """Rocket latitude coordinate, in degrees, as a Function of
+        time.
+        """
+        lat1 = np.deg2rad(self.env.latitude)  # Launch lat point converted to radians
+
+        # Applies the haversine equation to find final lat/lon coordinates
+        latitude = np.rad2deg(
+            np.arcsin(
+                np.sin(lat1) * np.cos(self.drift[:, 1] / self.env.earth_radius)
+                + np.cos(lat1)
+                * np.sin(self.drift[:, 1] / self.env.earth_radius)
+                * np.cos(np.deg2rad(self.bearing[:, 1]))
+            )
+        )
+        return np.column_stack((self.time, latitude))
+
+    # TODO: haversine should be defined in tools.py so we just invoke it in here.
+    @funcify_method("Time (s)", "Longitude (°)", "linear", "constant")
+    def longitude(self):
+        """Rocket longitude coordinate, in degrees, as a Function of
+        time.
+        """
+        lat1 = np.deg2rad(self.env.latitude)  # Launch lat point converted to radians
+        lon1 = np.deg2rad(self.env.longitude)  # Launch lon point converted to radians
+
+        # Applies the haversine equation to find final lat/lon coordinates
+        longitude = np.rad2deg(
+            lon1
+            + np.arctan2(
+                np.sin(np.deg2rad(self.bearing[:, 1]))
+                * np.sin(self.drift[:, 1] / self.env.earth_radius)
+                * np.cos(lat1),
+                np.cos(self.drift[:, 1] / self.env.earth_radius)
+                - np.sin(lat1) * np.sin(np.deg2rad(self.latitude[:, 1])),
+            )
+        )
+
+        return np.column_stack((self.time, longitude))
+    
+    @funcify_method("Time (s)", "Deployment (-)", "linear", "zero")
+    def airbrake_deployment(self):
+        """Deployment level of the airbrake"""
+        return np.array(self.__post_processed_variables)[:, [0, 1]]
+
 # TODO: Add sensors to this class
