@@ -305,6 +305,7 @@ class TesterInTheLoop:
 
         # More attributes
         self.parachutes = self.rocket.parachutes
+        self.sensors = self.rocket.sensors
 
         # Simulation initialization
         self.__init_devices(self.parachutes)
@@ -1368,9 +1369,34 @@ class TesterInTheLoop:
                 self.parachute_delay[parachute] += self.t
                 self.parachute_triggered_at[parachute] = self.t
 
-    def generate_output_data(self):
-        # TODO: Add sensors and generate data
-        a=1
+    def generate_sensor_data(self):
+        """Generates a list with the simulated sensor measurements"""
+        
+        sensor_data = []
+        u_dot = self.derivative(self.t, self.y_sol)
+        for sensor, position in self.sensors:
+            relative_position = position - self.rocket._csys * Vector(
+                [0, 0, self.rocket.center_of_dry_mass_position]
+            )
+            sensor.measure(
+                self.t,
+                u=self.y_sol,
+                u_dot=u_dot,
+                relative_position=relative_position,
+                environment=self.env,
+                gravity=self.env.gravity.get_value_opt(
+                    self.solution[-1][3]
+                ),
+                pressure=self.env.pressure,
+                earth_radius=self.env.earth_radius,
+                initial_coordinates=(self.env.latitude, self.env.longitude),
+            )
+            if isinstance(sensor.measurement, float):
+                sensor_data.append(sensor.measurement)
+            else:
+                sensor_data.extend(sensor.measurement)
+        
+        return sensor_data
     
     # Functions for the solution
     @funcify_method("Time (s)", "X (m)", "spline", "constant")
@@ -1562,5 +1588,3 @@ class TesterInTheLoop:
     def airbrake_deployment(self):
         """Deployment level of the airbrake"""
         return np.array(self.__post_processed_variables)[:, [0, 1]]
-
-# TODO: Add sensors to this class
